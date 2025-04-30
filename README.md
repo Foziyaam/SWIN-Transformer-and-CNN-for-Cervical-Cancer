@@ -3,7 +3,7 @@
 This document provides **comprehensive**, **detailed**, and **clear** documentation for the Hybrid ConvNeXt-Base + SwinV2-Base pipeline—**`SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py`**—including configuration, installation, usage, module breakdowns, and best practices.
 
 Use the **`SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py`** file which is extensively commented with “what” and “why” comments on every line:
-This script is ready-to-run, thoroughly commented, and aligned with industry standards (and this documentation is for **`SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py`**.
+This script is ready-to-run, thoroughly commented, and aligned with industry standards (and this documentation is for **`SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py`**).
 
 **Highlights of “what & why” comments:**
 - **Shebang & version check** to enforce Python 3.11+
