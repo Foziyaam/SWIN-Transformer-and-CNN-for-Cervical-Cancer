@@ -135,7 +135,31 @@ All parameters can be tweaked in the `CONFIG` dict. Ensure your dataset-loading 
 - **Augmentation Strategies:** Experiment with MixUp, RandAugment, or CutMix for further regularization.
 
 ---
+## 10. Caveates in using the CNN and SWIN-Transformer hybrid model
+For a moderate‐sized medical dataset, a **pure Swin-Transformer** will often **outperform** a naive **hybrid** (Swin + CNN) in raw generalization, unless you take extra steps to counteract the hybrid’s increased capacity:
 
+i. **Model capacity vs. overfitting**  
+   - **Hybrid (ConvNeXt + SwinV2)** ,for example (the one used here), has on the order of 175 M parameters. With <1K training images, that high capacity can easily memorize noise and subtle artifacts, hurting test performance unless you apply very aggressive regularization or domain-specific pretraining.  
+   - **Pure Swin-Tiny/Base** (≈28–86 M parameters) is large enough to learn rich features but small enough to still generalize on limited data.
+
+ii. **Feature overlap**  
+   - Both ConvNeXt and Swin already learn convolutional (local) and self-attention (global) patterns. When you fuse them, you often add **redundant** information rather than complementary signals—so the hybrid’s extra features don’t buy you proportionally more discriminative power.
+
+iii. **Training stability & efficiency**  
+   - A single‐backbone Swin is simpler to train (no freezing/unfreezing schedule across two networks) and converges more stably under mixed-precision and moderate batch sizes.  
+   - The hybrid requires careful warm-up, larger batch size, longer schedules, and eats 2–3× more GPU memory and time for only marginal gains.
+
+iv. **Empirical benchmarks**  
+   - In the literature on small-to-medium medical image tasks (e.g., histopathology, dermoscopy), single Transformer or EfficientNet backbones **routinely match or exceed** composite architectures, unless the dataset is much larger (>2 k images per class) or you have extensive self-supervised pretraining on domain data.
+
+---
+
+### Hence:
+
+- **If you need maximal feature richness** (which is the case here -- to distinguish normal from subtley different precancerous) and are prepared to invest in heavy regularization (dropout, augmentation, weight decay), large-scale self-supervised pretraining, or ensembling, the **hybrid** can edge out a pure Swin by capturing a few extra subtle cues.
+
+- **Otherwise**, for a <1k colposcopy dataset, a **standalone Swin-Transformer** (e.g. SwinV2-Base or even Swin-Tiny) will likely yield **better test performance** with less tuning, faster training, and lower overfitting risk.
+---
 **Contact & Support**  
 For questions or contributions, please raise an issue or pull request in the repository.
 
