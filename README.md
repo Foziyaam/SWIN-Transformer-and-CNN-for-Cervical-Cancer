@@ -1,141 +1,252 @@
-# SWIN-Transformer-and-CNN-for-Cervical-Cancer
+# Hybrid ConvNeXt-Base + SwinV2-Base Pipeline Documentation
 
-# Hybrid Model Pipeline Documentation
-
-This document provides detailed documentation for the hybrid ConvNeXt‑Base + SwinV2‑Base transfer‑learning pipeline designed for moderate‑size colposcopy image classification (normal vs. precancerous). It covers installation, configuration, data preparation, architecture, training, evaluation, and customization.
+This document provides **comprehensive**, **detailed**, and **clear** documentation for the Hybrid ConvNeXt-Base + SwinV2-Base pipeline—**`SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py`**—including configuration, installation, usage, module breakdowns, and best practices.
 
 ---
 
-## 1. Overview
-
-- **Goal:** Leverage complementary strengths of a convolutional backbone (ConvNeXt‑Base) and a Transformer backbone (SwinV2‑Base) via feature fusion, to capture both fine‑grained textures and global context in medical images.
-- **Dataset Size:** ~720 images total (360 normal, 360 precancerous), with a 70/30 train/test split and 5‑fold CV on training data.
-- **Key Features:**
-  - Two pretrained backbones from `timm` (ImageNet‑22K → ImageNet‑1K).  
-  - Warm‑up freeze of backbone weights followed by full fine‑tuning.  
-  - Mixed‑precision training for efficiency.  
-  - Stratified split ensures balanced classes in train/test.
+## Table of Contents
+1. [Overview](#overview)
+2. [Installation & Requirements](#installation--requirements)
+3. [Configuration](#configuration)
+4. [Command-Line Interface (CLI)](#command-line-interface-cli)
+5. [Pipeline Modules](#pipeline-modules)
+   - [1. `set_seed`](#1-set_seed)
+   - [2. `get_transforms`](#2-get_transforms)
+   - [3. `HybridModel` class](#3-hybridmodel-class)
+   - [4. `train_one_epoch`](#4-train_one_epoch)
+   - [5. `evaluate`](#5-evaluate)
+   - [6. `explain_image`](#6-explain_image)
+   - [7. `plot_metrics`](#7-plot_metrics)
+6. [Data Loading & Splitting](#data-loading--splitting)
+7. [Training & Cross-Validation Loop](#training--cross-validation-loop)
+8. [Explainability & Visualization](#explainability--visualization)
+9. [Extending & Customizing](#extending--customizing)
+10. [Logging & Reproducibility](#logging--reproducibility)
+11. [Usage Example](#usage-example)
+12. [FAQ](#faq)
 
 ---
 
-## 2. Requirements & Installation
+## Overview
 
-**Python 3.8+**
+This pipeline implements a hybrid transfer-learning architecture combining:
+- **ConvNeXt-Base** (pretrained on ImageNet-22K) for rich local feature extraction
+- **SwinV2-Base** (pretrained on ImageNet-22K→1K) for hierarchical self-attention
 
-Install required packages:
+Features are fused by concatenating pooled representations from both backbones and passing through a dropout+linear head. It supports:
+- Stratified 70/30 train/test split
+- 5-fold cross-validation on training data
+- Mixed-precision training with initial backbone freezing
+- Captum-based explainability (Integrated Gradients & Grad-CAM)
+- JSON/YAML config overrides, structured logging, and shebang/runtime checks for Python 3.11+
+
+---
+
+## Installation & Requirements
+
+**Python 3.11+**
+
+Install dependencies:
 ```bash
-pip install torch torchvision timm scikit-learn matplotlib seaborn
+pip install torch torchvision timm captum scikit-learn matplotlib seaborn pyyaml
+```
+
+Ensure you have a CUDA‑enabled GPU and matching CUDA toolkit for best performance.
+
+**Code Requirements:**
+- Add shebang at the top of `SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py`:
+  ```python
+  #!/usr/bin/env python3.11
+  ```
+- Enforce Python version at runtime by adding at script start:
+  ```python
+  import sys
+  if sys.version_info < (3, 11):
+      sys.exit("ERROR: Python 3.11 or higher is required.")
+  ```
+
+---
+
+## Configuration
+
+All settings live in the `DEFAULT_CONFIG` dict and can be overridden via a JSON or YAML file passed with `--config`.
+
+| Key               | Description                                     | Default                            |
+|-------------------|-------------------------------------------------|------------------------------------|
+| `seed`            | Random seed                                     | 42                                 |
+| `image_size`      | Input H×W                                       | 224                                |
+| `batch_size`      | Samples per batch                               | 16                                 |
+| `num_workers`     | DataLoader workers                              | 4                                  |
+| `cnn_arch`        | ConvNeXt backbone name                          | `convnext_base`                    |
+| `swin_arch`       | Swin Transformer backbone name                  | `swinv2_base_window8_256`          |
+| `num_classes`     | Output classes                                  | 2                                  |
+| `freeze_epochs`   | Epochs to freeze pretrained weights             | 5                                  |
+| `num_epochs`      | Total training epochs                           | 30                                 |
+| `learning_rate`   | Initial LR                                      | 3e-4                               |
+| `weight_decay`    | L2 regularization                                | 1e-2                               |
+| `step_size`       | LR scheduler step interval (epochs)             | 8                                  |
+| `gamma`           | LR decay factor                                 | 0.85                               |
+| `mixed_precision` | Enable AMP mixed-precision                      | true                               |
+| `num_folds`       | K-fold CV folds                                 | 5                                  |
+| `test_size`       | Fraction for final test split                   | 0.3                                |
+| `save_dir`        | Checkpoint save directory                       | `./checkpoints`                    |
+
+**Example `config.yaml`:**
+```yaml
+batch_size: 32
+learning_rate: 1e-3
+test_size: 0.25
+mixed_precision: false
 ```  
-Ensure CUDA (11.x) is configured for GPU acceleration.
+Run:
+```bash
+python SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py --config config.yaml
+```
 
 ---
 
-## 3. Configuration Parameters
+## Command-Line Interface (CLI)
 
-All hyperparameters and architecture choices live in the `CONFIG` dictionary at the top of `hybrid_model_pipeline.py`:
+```bash
+usage: SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py [--config CONFIG]
 
-| Key                         | Description                                                 | Example       |
-|-----------------------------|-------------------------------------------------------------|--------------:|
-| `seed`                      | Random seed for reproducibility                              | 42            |
-| `image_size`                | Input size for cropping/resizing                             | 224           |
-| `batch_size`                | Mini‑batch size                                              | 16            |
-| `num_workers`               | Number of DataLoader workers                                | 4             |
-| `cnn_arch`                  | CNN backbone name in `timm`                                  | `convnext_base` |
-| `swin_arch`                 | Swin backbone name in `timm`                                 | `swinv2_base_window8_256` |
-| `freeze_backbones_epochs`   | Epochs to keep backbones frozen before full fine‑tuning      | 5             |
-| `num_epochs`                | Total training epochs                                       | 30            |
-| `learning_rate`             | Initial learning rate for AdamW                             | 3e-4          |
-| `weight_decay`              | L2 regularization                                           | 1e-2          |
-| `step_size`                 | LR scheduler step interval (in epochs)                      | 8             |
-| `gamma`                     | LR decay factor                                             | 0.85          |
-| `mixed_precision`           | Enable AMP mixed‑precision                                  | `True`        |
-| `num_folds`                 | Number of CV folds on training split                        | 5             |
-| `test_size`                 | Fraction of data reserved for test (stratified)             | 0.3           |
-| `save_dir`                  | Directory to save checkpoints                               | `./checkpoints` |
+options:
+  --config CONFIG   Path to JSON/YAML config file
+```
 
 ---
 
-## 4. Data Preparation
+## Pipeline Modules
 
-1. **Load Data:** Your images should be a NumPy array of shape `(720, H, W, 3)` and labels an array of length `720` with values `0` (normal) or `1` (precancerous).
-2. **Stratified Split:** The code uses `train_test_split(..., stratify=labels)` to allocate 70% of samples (504) for training and 30% (216) for final testing while maintaining class balance.
-3. **Transforms:** Two pipelines in `get_data_transforms`:
-   - **Train:** RandomResizedCrop, horizontal flip, jitter, rotation, normalization.  
-   - **Test:** Resize→CenterCrop, normalization.
-4. **TensorDataset:** Images are converted to `torch.float32` and permuted to `(C,H,W)`; labels to `torch.long`.
+### 1. `set_seed(seed: int) -> None`
+**What:** Sets seeds for Python, NumPy, and PyTorch (CPU & GPU).
+**Why:** Guarantees reproducible data splits, augmentations, and training.
 
----
+### 2. `get_transforms(img_size: int) -> Dict[str, Compose]`
+**What:** Returns `train` and `test` transform pipelines:
+- **Train:** random crop, flip, color jitter, rotate, normalize
+- **Test:** resize→center crop, normalize
+**Why:** Augmentation for generalization; normalization matches pretrained stats.
 
-## 5. Model Architecture
-
+### 3. `HybridModel` class
 ```python
-class HybridCNN_Swin(nn.Module):
-    def __init__(self, cfg, freeze_backbones=False):
-        # Load pretrained ConvNeXt-Base and SwinV2-Base without classifier heads
-        # Optionally freeze all backbone parameters
-        # Build a fusion head: Dropout + Linear(cnn_dim + swin_dim → 2 classes)
-
-    def forward(self, x):
-        # Extract CNN features → f1
-        # Extract Swin features → f2
-        # Concatenate [f1, f2] → Dropout → Final FC → logits
-        return logits
+self.cnn = timm.create_model(cnn_name, pretrained=True, num_classes=0)
+self.swin = timm.create_model(swin_name, pretrained=True, num_classes=0)
+# optional freeze
+dim = cnn.num_features + swin.num_features
+torch.nn.Sequential(Dropout, Linear(dim, num_classes))
 ```
+**What:** Loads two backbones without heads, optionally freezes, concatenates features, applies classification head.
+**Why:** Fusion of convolutional and attention pathways captures multi-scale subtle features.
 
-- **Why these backbones?** ConvNeXt-Base captures detailed local textures; SwinV2-Base offers hierarchical self‑attention to model global context—together they excel at picking subtle, multi‑scale patterns in limited data.
+### 4. `train_one_epoch(...) -> float`
+**What:** Trains one epoch with AMP:
+- Zero gradients, forward, compute loss
+- Scaled backward, optimizer step, scaler update
+- Returns average loss
+**Why:** Encapsulates best-practice mixed-precision training workflow.
 
----
+### 5. `evaluate(...) -> (acc, f1, auc, ys, ps, pr)`
+**What:** Runs inference on loader, returns:
+- **accuracy**, **F1**, **ROC AUC**
+- raw lists: true labels `ys`, preds `ps`, positive-class probs `pr`
+**Why:** Clean separation for metric computation and plotting.
 
-## 6. Training & Cross‑Validation
+### 6. `explain_image(...) -> (ig_map, gc_map)`
+**What:** Uses Captum to compute:
+- **Integrated Gradients** attributions
+- **Grad-CAM** heatmap on last Swin stage
+**Why:** Visualize regions influencing the model’s decision on test samples.
 
-1. **5‑Fold CV:** On the 504 training samples, a `KFold(n_splits=5, shuffle=True, random_state=seed)` splits data into train/validation subsets.  
-2. **Warm‑up Epochs:** Backbones are frozen for the first `freeze_backbones_epochs` epochs so that only the new fusion head learns; after that, all weights are unfrozen for full fine‑tuning.  
-3. **Optimizer & Scheduler:** Uses `AdamW` with the configured lr and weight_decay; `StepLR` decays LR by `gamma` every `step_size` epochs.  
-4. **Mixed Precision:** `torch.cuda.amp` accelerates training and reduces memory footprint.
-
-**Training Loop Pseudocode:**
-```text
-for fold in CV:
-  init model (freeze backbones)
-  for epoch in range(num_epochs):
-    if epoch == freeze_backbones_epochs: unfreeze backbones
-    train one epoch → compute loss
-    step scheduler
-  evaluate on fixed test set → record metrics + save checkpoint
-```
-
----
-
-## 7. Evaluation & Metrics
-
-- **Metrics:** Accuracy, F1-score, ROC AUC via `sklearn.metrics`.  
-- **Fixed Test Set:** After each CV fold’s training, the model is evaluated on the same 216 test samples for consistency.  
-- **Plots:** For each fold, the pipeline generates:
-  - ROC curve with AUC label.  
-  - Confusion matrix heatmap.
-
-### Final Reporting
-- **Average Test Accuracy:** Printed at the end as the mean across CV folds.
+### 7. `plot_metrics(...)`
+**What:** Plots ROC curve with AUC and confusion matrix heatmap.
+**Why:** Quick diagnostics per fold.
 
 ---
 
-## 8. Usage Example
+## Data Loading & Splitting
 
-```bash
-python hybrid_model_pipeline.py
+In `main()`, replace placeholder with your loader:
+```python
+# images: np.ndarray (N, H, W, 3); labels: np.ndarray (N,)
+# e.g., images = np.load('images.npy')
 ```  
-All parameters can be tweaked in the `CONFIG` dict. Ensure your dataset-loading code replaces the `# TODO` placeholder.
+Then pipeline does:
+```python
+X_train, X_test, y_train, y_test = train_test_split(..., stratify=labels)
+```  
+Wrap as `TensorDataset(torch.tensor(...))` and permute channels.
 
 ---
 
-## 9. Customization & Extensions
+## Training & Cross-Validation Loop
 
-- **Domain Pretraining:** Pretrain backbones with self‑supervised methods (e.g., DINOv2) on unlabeled colposcopy images before fine‑tuning.  
-- **Backbone Variants:** Swap `cnn_arch`/`swin_arch` to lighter/heavier models based on resource constraints.  
-- **Augmentation Strategies:** Experiment with MixUp, RandAugment, or CutMix for further regularization.
+1. **Stratified split**: 70% train (504 samples), 30% test (216 samples).
+2. **K-Fold**: 5 folds on training set.
+3. **Per fold**:
+   - DataLoaders for train, validation, test.
+   - Initialize `HybridModel` (`freeze_backbones=True`).
+   - Train for `num_epochs`, unfreeze after `freeze_epochs`.
+   - Eval on test, log metrics, plot.
+   - Explain one test image with IG & Grad-CAM.
+4. **Aggregate** average test accuracy across folds.
 
 ---
-## 10. Caveates in using the CNN and SWIN-Transformer hybrid model
+
+## Explainability & Visualization
+
+For each fold, displays:
+- **Integrated Gradients** blended heatmap
+- **Grad-CAM** overlay on original image
+
+Use Captum’s `visualize_image_attr` for clean figures.
+
+---
+
+## Extending & Customizing
+
+- Swap backbones via `cnn_arch`/`swin_arch` config.
+- Add new CLI args for hyperparameters.
+- Integrate CI with `pytest`, `flake8`, `black`.
+- Dockerize with a `Dockerfile` for environment reproducibility.
+- Export model via TorchScript or ONNX for serving.
+
+---
+
+## Logging & Reproducibility
+
+- Structured `logging` outputs per fold/epoch.
+- Seeds set for full reproducibility.
+- Checkpoints saved to `save_dir`.
+
+---
+
+## Usage Example
+
+Run with defaults:
+```bash
+python SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py
+```
+With YAML config:
+```bash
+python SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py --config config.yaml
+```
+
+---
+
+## FAQ
+
+**Q1: Can I change to PyTorch Lightning?**  
+A: Yes, wrap modules and loops into `pl.LightningModule` and `Trainer`.
+
+**Q2: How to add more attribution methods?**  
+A: Extend `explain_image` with Captum’s `DeepLift`, `FeatureAblation`, etc.
+
+**Q3: My dataset has 3 classes—how to adapt?**  
+A: Set `num_classes: 3` in config; update label encoding accordingly.
+
+---
+## Caveates in using the CNN and SWIN-Transformer hybrid model
 For a moderate‐sized medical dataset, a **pure Swin-Transformer** will often **outperform** a naive **hybrid** (Swin + CNN) in raw generalization, unless you take extra steps to counteract the hybrid’s increased capacity:
 
 i. **Model capacity vs. overfitting**  
@@ -162,4 +273,7 @@ iv. **Empirical benchmarks**
 ---
 **Contact & Support**  
 For questions or contributions, please raise an issue or pull request in the repository.
+
+
+
 
