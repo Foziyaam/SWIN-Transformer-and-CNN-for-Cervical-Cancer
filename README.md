@@ -137,5 +137,5 @@ All parameters can be tweaked in the `CONFIG` dict. Ensure your dataset-loading 
 ---
 
 **Contact & Support**  
-For questions or contributions, please raise an issue or pull request in the repository where this pipeline is hosted.
+For questions or contributions, please raise an issue or pull request in the repository.
 
