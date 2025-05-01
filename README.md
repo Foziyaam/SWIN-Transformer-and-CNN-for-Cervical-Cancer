@@ -289,6 +289,204 @@ iv. **Empirical benchmarks**
 
 - **Otherwise**, for a <1k colposcopy dataset, a **standalone Swin-Transformer** (e.g. SwinV2-Base or even Swin-Tiny) will likely yield **better test performance** with less tuning, faster training, and lower overfitting risk.
 ---
+---
+---
+
+# Production Deployment Guide for SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py
+
+This guide details **step-by-step**, **complete**, and **accurate** procedures to deploy your hybrid ConvNeXt + SwinV2 model pipeline both as a **server-side inference service** and on **edge/mobile devices**. All instructions adhere to **industry best practices**, ensuring reliability, scalability, and efficiency.
+
+---
+
+## Table of Contents
+1. [Prerequisites](#prerequisites)
+2. [Model Export & Optimization](#model-export--optimization)
+   - 2.1 [TorchScript Export](#torchscript-export)
+   - 2.2 [ONNX Export](#onnx-export)
+   - 2.3 [Quantization for Edge](#quantization-for-edge)
+3. [Server-Side Deployment](#server-side-deployment)
+   - 3.1 [Docker Containerization](#docker-containerization)
+   - 3.2 [FastAPI Service](#fastapi-service)
+   - 3.3 [Kubernetes / Cloud Run](#kubernetes--cloud-run)
+   - 3.4 [Monitoring & Logging](#monitoring--logging)
+4. [Edge & Mobile Deployment](#edge--mobile-deployment)
+   - 4.1 [PyTorch Mobile (Android)](#pytorch-mobile-android)
+   - 4.2 [Core ML (iOS)](#core-ml-ios)
+   - 4.3 [On-Device Explainability](#on-device-explainability)
+5. [Security & Privacy Considerations](#security--privacy-considerations)
+6. [FAQ & Troubleshooting](#faq--troubleshooting)
+
+---
+
+## Prerequisites
+- **Trained model**: `SWIN_Transformer__CNN_Hybrid_Model_Pipeline.py` has produced a saved checkpoint (e.g., `best_model.pt`).
+- **Environment**: Linux or Windows server with Docker; Android Studio / Xcode for mobile.
+- **Python**: 3.11+ for server; PyTorch Mobile 1.13+ for Android; Core ML Tools 5+ for iOS.
+
+---
+
+## Model Export & Optimization
+
+### 2.1 TorchScript Export
+```python
+import torch
+from your_pipeline import HybridModel  # import model class
+device = 'cpu'
+model = HybridModel(...)
+model.load_state_dict(torch.load('best_model.pt', map_location=device))
+model.eval()
+scripted = torch.jit.script(model)
+scripted.save('model_scripted.pt')
+```
+- **Why**: TorchScript removes Python dependency, enables optimized C++ runtime.
+
+### 2.2 ONNX Export
+```python
+dummy = torch.randn(1, 3, 224, 224)
+torch.onnx.export(
+    model, dummy, 'model.onnx',
+    input_names=['input'], output_names=['output'],
+    dynamic_axes={'input':{0:'batch'}, 'output':{0:'batch'}}, opset_version=12
+)
+```
+- **Why**: ONNX is vendor-neutral, supports TensorRT, OpenVINO, etc.
+
+### 2.3 Quantization for Edge
+```python
+import torch.quantization as tq
+quantized = tq.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+scripted_q = torch.jit.script(quantized)
+scripted_q.save('model_quantized.pt')
+```
+- **Why**: Reduces model size and inference latency on-device.
+
+---
+
+## Server-Side Deployment
+
+### 3.1 Docker Containerization
+- **requirements.txt**:
+  ```text
+  torch
+  torchvision
+  timm
+  fastapi
+  uvicorn
+  pyyaml
+  numpy
+  ```
+- **Dockerfile**:
+  ```dockerfile
+  FROM python:3.11-slim
+  WORKDIR /app
+  COPY requirements.txt ./
+  RUN pip install --no-cache-dir -r requirements.txt
+  COPY model_scripted.pt app.py ./
+  CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]
+  ```
+- **Build & Push**:
+  ```bash
+docker build -t yourrepo/colpo-hybrid:latest .
+docker push yourrepo/colpo-hybrid:latest
+  ```
+
+### 3.2 FastAPI Service
+```python
+# app.py
+from fastapi import FastAPI, File, UploadFile
+import io
+from PIL import Image
+import torch
+from torchvision import transforms
+
+app = FastAPI()
+model = torch.jit.load('model_scripted.pt')
+model.eval()
+preprocess = transforms.Compose([...])  # same as get_transforms['test']
+
+@app.post('/predict')
+async def predict(file: UploadFile = File(...)):
+    data = await file.read()
+    img = Image.open(io.BytesIO(data)).convert('RGB')
+    inp = preprocess(img).unsqueeze(0)
+    with torch.no_grad():
+        logits = model(inp)
+        prob = torch.softmax(logits,1)[0,1].item()
+    label = 'Precancerous' if prob>0.5 else 'Normal'
+    return {'label': label, 'probability': prob}
+```
+
+### 3.3 Kubernetes / Cloud Run
+- **Kubernetes Deployment** YAML with:
+  - `Deployment` (image, resources, env vars)
+  - `Service` + `Ingress` (HTTP, TLS)
+  - HPA based on CPU/memory or custom metrics
+- **GCP Cloud Run**:
+  ```bash
+gcloud run deploy colpo-hybrid --image gcr.io/yourproject/colpo-hybrid:latest --platform managed --allow-unauthenticated
+  ```
+
+### 3.4 Monitoring & Logging
+- **Prometheus** exporter for latency & error metrics
+- **ELK** or **Cloud Logging** for structured logs
+- Health checks on `/predict` endpoint
+
+---
+
+## Edge & Mobile Deployment
+
+### 4.1 PyTorch Mobile (Android)
+- **Model**: `model_quantized.pt` in `app/src/main/assets`
+- **Gradle Dependencies**:
+  ```gradle
+  implementation 'org.pytorch:pytorch_android:1.13.0'
+  implementation 'org.pytorch:pytorch_android_torchvision:1.13.0'
+  ```
+- **Inference** (Kotlin):
+  ```kotlin
+  val module = LiteModuleLoader.load(assetFilePath(context, "model_quantized.pt"))
+  val inputTensor = TensorImageUtils.bitmapToFloat32Tensor(bitmap, ...)
+  val output = module.forward(IValue.from(inputTensor)).toTensor()
+  val prob = output.dataAsFloatArray[1]
+  ```
+
+### 4.2 Core ML (iOS)
+```python
+import coremltools as ct
+mlmodel = ct.convert(
+    'model_scripted.pt',
+    inputs=[ct.ImageType(name="input", shape=(1,3,224,224))]
+)
+mlmodel.save('ColpoHybrid.mlmodel')
+```
+- **Swift Inference**:
+  ```swift
+  let model = try VNCoreMLModel(for: ColpoHybrid().model)
+  let req = VNCoreMLRequest(model: model) { ... }
+  try VNImageRequestHandler(cvPixelBuffer: buf).perform([req])
+  ```
+
+### 4.3 On-Device Explainability
+- Compute Grad-CAM in Java/Swift by retrieving intermediate feature maps and gradients.
+- Overlay heatmaps on camera preview for real-time feedback.
+
+---
+
+## Security & Privacy Considerations
+- Use HTTPS/TLS for server endpoints.
+- No PHI leaves the client in edge mode.
+- Implement authentication (JWT, API keys) for clinical deployments.
+
+---
+
+## FAQ & Troubleshooting
+- **Latency too high?** Use TensorRT or GPU autoscaling.
+- **Quantized accuracy drop?** Try static quantization or calibration.
+- **Model loading fails?** Ensure matching PyTorch versions between export and runtime.
+
+
+
+---
 **Contact & Support**  
 For questions or contributions, please raise an issue or pull request in the repository.
 
